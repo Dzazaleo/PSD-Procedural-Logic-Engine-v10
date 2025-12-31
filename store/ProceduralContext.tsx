@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import { Psd } from 'ag-psd';
-import { TemplateMetadata, MappingContext, TransformedPayload, LayoutStrategy, KnowledgeContext, KnowledgeRegistry } from '../types';
+import { TemplateMetadata, MappingContext, TransformedPayload, LayoutStrategy, KnowledgeContext, KnowledgeRegistry, StyleAnchor, StyleRegistry } from '../types';
 
 interface ProceduralState {
   // Maps NodeID -> Raw PSD Object (Binary/Structure)
@@ -24,6 +24,9 @@ interface ProceduralState {
 
   // Maps NodeID -> KnowledgeContext (Global Design Rules)
   knowledgeRegistry: KnowledgeRegistry;
+  
+  // Maps NodeID -> StyleAnchor List (Style Gallery)
+  styleRegistry: StyleRegistry;
 
   // Global counter to force re-evaluation of downstream nodes upon binary re-hydration
   globalVersion: number;
@@ -38,9 +41,11 @@ interface ProceduralContextType extends ProceduralState {
   updatePayload: (nodeId: string, handleId: string, partial: Partial<TransformedPayload>) => void; 
   registerAnalysis: (nodeId: string, handleId: string, strategy: LayoutStrategy) => void;
   registerKnowledge: (nodeId: string, context: KnowledgeContext) => void;
+  registerStyleAnchors: (nodeId: string, anchors: StyleAnchor[]) => void;
   updatePreview: (nodeId: string, handleId: string, url: string) => void;
   unregisterNode: (nodeId: string) => void;
   triggerGlobalRefresh: () => void;
+  sampleStyle: (imageSource: CanvasImageSource) => Promise<{ palette: string[], vibe: string }>;
 }
 
 const ProceduralContext = createContext<ProceduralContextType | null>(null);
@@ -138,6 +143,63 @@ const reconcileTerminalState = (
     };
 };
 
+// --- HELPER: Color Quantization for Style Sampling ---
+const extractPalette = (ctx: CanvasRenderingContext2D, width: number, height: number): { palette: string[], brightness: number, contrast: number } => {
+    try {
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+        const colorCounts: Record<string, number> = {};
+        let totalBrightness = 0;
+        let minLum = 255, maxLum = 0;
+
+        // Sampling Step (skip pixels for performance)
+        const step = 4; // Check every 4th pixel
+        
+        for (let i = 0; i < data.length; i += 4 * step) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const a = data[i + 3];
+
+            if (a < 128) continue; // Skip transparency
+
+            // Calculate Luminance (Perceived Brightness)
+            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            totalBrightness += lum;
+            if (lum < minLum) minLum = lum;
+            if (lum > maxLum) maxLum = lum;
+
+            // Quantize colors (round to nearest 32 to group similar shades)
+            const rQ = Math.round(r / 32) * 32;
+            const gQ = Math.round(g / 32) * 32;
+            const bQ = Math.round(b / 32) * 32;
+
+            const hex = `#${((1 << 24) + (rQ << 16) + (gQ << 8) + bQ).toString(16).slice(1)}`;
+            colorCounts[hex] = (colorCounts[hex] || 0) + 1;
+        }
+
+        // Sort by frequency
+        const sortedColors = Object.keys(colorCounts).sort((a, b) => colorCounts[b] - colorCounts[a]);
+        const palette = sortedColors.slice(0, 5);
+
+        const avgBrightness = totalBrightness / (data.length / (4 * step));
+        const contrast = maxLum - minLum;
+
+        return { palette, brightness: avgBrightness, contrast };
+    } catch (e) {
+        console.error("Palette Extraction Failed", e);
+        return { palette: ['#000000'], brightness: 0, contrast: 0 };
+    }
+};
+
+const determineVibe = (brightness: number, contrast: number): string => {
+    if (contrast > 150) return "High Contrast";
+    if (brightness > 200) return "High Key / Bright";
+    if (brightness < 50) return "Low Key / Dark";
+    if (contrast < 50) return "Muted / Soft";
+    return "Balanced";
+};
+
 export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [psdRegistry, setPsdRegistry] = useState<Record<string, Psd>>({});
   const [templateRegistry, setTemplateRegistry] = useState<Record<string, TemplateMetadata>>({});
@@ -146,6 +208,7 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
   const [reviewerRegistry, setReviewerRegistry] = useState<Record<string, Record<string, TransformedPayload>>>({});
   const [analysisRegistry, setAnalysisRegistry] = useState<Record<string, Record<string, LayoutStrategy>>>({});
   const [knowledgeRegistry, setKnowledgeRegistry] = useState<KnowledgeRegistry>({});
+  const [styleRegistry, setStyleRegistry] = useState<StyleRegistry>({});
   const [globalVersion, setGlobalVersion] = useState<number>(0);
 
   const registerPsd = useCallback((nodeId: string, psd: Psd) => {
@@ -325,6 +388,13 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     });
   }, []);
 
+  const registerStyleAnchors = useCallback((nodeId: string, anchors: StyleAnchor[]) => {
+      setStyleRegistry(prev => {
+          if (JSON.stringify(prev[nodeId]) === JSON.stringify(anchors)) return prev;
+          return { ...prev, [nodeId]: anchors };
+      });
+  }, []);
+
   const updatePreview = useCallback((nodeId: string, handleId: string, url: string) => {
     setPayloadRegistry(prev => {
       const nodeRecord = prev[nodeId];
@@ -363,6 +433,13 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
         return rest; 
     });
     
+    // Cleanup Style Registry
+    setStyleRegistry(prev => {
+        if (!prev[nodeId]) return prev;
+        const { [nodeId]: _, ...rest } = prev;
+        return rest;
+    });
+
     // Lifecycle Force Refresh: 
     // Increment global version to notify downstream subscribers (like Analyst Node) 
     // that a dependency (e.g., Knowledge Node) might have been removed.
@@ -373,6 +450,23 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     setGlobalVersion(v => v + 1);
   }, []);
 
+  const sampleStyle = useCallback(async (imageSource: CanvasImageSource): Promise<{ palette: string[], vibe: string }> => {
+      const canvas = document.createElement('canvas');
+      // Create a small context for sampling
+      canvas.width = 128; 
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return { palette: ['#000000'], vibe: 'Unknown' };
+
+      // Draw and scale down
+      ctx.drawImage(imageSource, 0, 0, 128, 128);
+      
+      const { palette, brightness, contrast } = extractPalette(ctx, 128, 128);
+      const vibe = determineVibe(brightness, contrast);
+
+      return { palette, vibe };
+  }, []);
+
   const value = useMemo(() => ({
     psdRegistry,
     templateRegistry,
@@ -381,6 +475,7 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     reviewerRegistry,
     analysisRegistry,
     knowledgeRegistry,
+    styleRegistry,
     globalVersion,
     registerPsd,
     registerTemplate,
@@ -390,13 +485,15 @@ export const ProceduralStoreProvider: React.FC<{ children: React.ReactNode }> = 
     updatePayload, 
     registerAnalysis,
     registerKnowledge,
+    registerStyleAnchors,
     updatePreview,
     unregisterNode,
-    triggerGlobalRefresh
+    triggerGlobalRefresh,
+    sampleStyle
   }), [
-    psdRegistry, templateRegistry, resolvedRegistry, payloadRegistry, reviewerRegistry, analysisRegistry, knowledgeRegistry, globalVersion,
-    registerPsd, registerTemplate, registerResolved, registerPayload, registerReviewerPayload, updatePayload, registerAnalysis, registerKnowledge, updatePreview,
-    unregisterNode, triggerGlobalRefresh
+    psdRegistry, templateRegistry, resolvedRegistry, payloadRegistry, reviewerRegistry, analysisRegistry, knowledgeRegistry, styleRegistry, globalVersion,
+    registerPsd, registerTemplate, registerResolved, registerPayload, registerReviewerPayload, updatePayload, registerAnalysis, registerKnowledge, registerStyleAnchors, updatePreview,
+    unregisterNode, triggerGlobalRefresh, sampleStyle
   ]);
 
   return (

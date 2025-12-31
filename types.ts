@@ -42,6 +42,18 @@ export interface KnowledgeContext {
 }
 
 export type KnowledgeRegistry = Record<string, KnowledgeContext>;
+
+// --- STYLE ANCHOR INTEGRATION ---
+export interface StyleAnchor {
+  id: string;
+  layerId: string; // Path ID from PSD
+  layerName: string;
+  thumbnail: string; // Base64 Data URL (64x64 optimized)
+  palette: string[]; // Top 5 Hex Colors
+  vibe: string; // Semantic tag (e.g., "Warm/Dark", "High Contrast")
+}
+
+export type StyleRegistry = Record<string, StyleAnchor[]>;
 // -----------------------------
 
 export interface ContainerContext {
@@ -222,6 +234,7 @@ export interface PSDNodeData {
   remapperConfig?: RemapperConfig | null; // For RemapperNode state
   transformedPayload?: TransformedPayload | null; // For RemapperNode output
   knowledgeContext?: KnowledgeContext | null; // For KnowledgeNode state
+  styleAnchors?: StyleAnchor[]; // For StyleAnchorNode state
   
   // Dynamic State Persistence
   channelCount?: number;

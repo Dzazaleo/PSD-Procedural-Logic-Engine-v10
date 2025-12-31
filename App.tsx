@@ -25,6 +25,7 @@ import { ExportPSDNode } from './components/ExportPSDNode';
 import { KnowledgeNode } from './components/KnowledgeNode'; 
 import { DesignReviewerNode } from './components/DesignReviewerNode';
 import { DesignPreviewNode } from './components/DesignPreviewNode';
+import { StyleAnchorNode } from './components/StyleAnchorNode';
 import { ProjectControls } from './components/ProjectControls';
 import { PSDNodeData } from './types';
 import { ProceduralStoreProvider } from './store/ProceduralContext';
@@ -40,6 +41,12 @@ const initialNodes: Node<PSDNodeData>[] = [
     id: 'node-knowledge-1',
     type: 'knowledge',
     position: { x: 50, y: 350 },
+    data: { fileName: null, template: null, validation: null, designLayers: null },
+  },
+  {
+    id: 'node-style-1',
+    type: 'styleAnchor',
+    position: { x: 50, y: 650 },
     data: { fileName: null, template: null, validation: null, designLayers: null },
   },
   {
@@ -217,6 +224,16 @@ const App: React.FC = () => {
                 }
             }
         }
+        
+        // Style Anchor Validation Rules
+        if (targetNode.type === 'styleAnchor') {
+            if (params.targetHandle === 'psd-in') {
+                if (sourceNode.type !== 'loadPsd') {
+                    console.warn("Style Anchor 'PSD Input' requires a Load PSD source.");
+                    return;
+                }
+            }
+        }
 
         // Export Node Validation Update (PHASE 4: STRICT GATE)
         if (targetNode.type === 'exportPsd' && params.targetHandle?.startsWith('input-')) {
@@ -261,7 +278,8 @@ const App: React.FC = () => {
     remapper: RemapperNode,
     designAnalyst: DesignAnalystNode, 
     designReviewer: DesignReviewerNode,
-    designPreview: DesignPreviewNode, // REGISTERED
+    designPreview: DesignPreviewNode,
+    styleAnchor: StyleAnchorNode, // REGISTERED
     exportPsd: ExportPSDNode,
     knowledge: KnowledgeNode,
   }), []);
